@@ -1,7 +1,130 @@
 <template>
     <div class="w-screen h-screen bg-black" ref="container"></div>
-    <div class="absolute top-0 left-0">
-        
+    <!-- 左侧图表面板：任务状态占比饼图 + 巡检任务趋势柱状图 -->
+    <div class="absolute top-0 left-0 w-85 pointer-events-none">
+        <!-- 饼图 -->
+        <div
+            class="pointer-events-auto m-3 flex flex-col rounded-lg border border-white/15 bg-black/75 backdrop-blur-md overflow-hidden"
+        >
+            <div
+                class="flex items-center justify-between px-4 py-3 border-b border-white/10"
+            >
+                <span class="text-white text-base font-semibold tracking-wide"
+                    >任务状态占比</span
+                >
+            </div>
+            <div ref="pieChartRef" class="w-full" style="height: 240px"></div>
+        </div>
+        <!-- 柱状图 -->
+        <div
+            class="pointer-events-auto m-3 flex flex-col rounded-lg border border-white/15 bg-black/75 backdrop-blur-md overflow-hidden"
+        >
+            <div
+                class="flex items-center justify-between px-4 py-3 border-b border-white/10"
+            >
+                <span class="text-white text-base font-semibold tracking-wide"
+                    >巡检任务趋势</span
+                >
+            </div>
+            <div ref="barChartRef" class="w-full" style="height: 200px"></div>
+        </div>
+    </div>
+    <!-- 右侧巡检任务面板 -->
+    <div
+        class="absolute top-50 right-0 h-100 w-90 flex flex-col pointer-events-none"
+    >
+        <div
+            class="pointer-events-auto m-3 flex flex-col rounded-lg border border-white/15 bg-black/75 backdrop-blur-md overflow-hidden"
+            style="max-height: calc(100vh - 24px)"
+        >
+            <!-- 面板标题 -->
+            <div
+                class="flex items-center justify-between px-4 py-3 border-b border-white/10"
+            >
+                <span class="text-white text-base font-semibold tracking-wide"
+                    >自动巡检任务</span
+                >
+                <span class="text-white/50 text-xs"
+                    >共 {{ taskList.length }} 条</span
+                >
+            </div>
+            <!-- 任务列表 -->
+            <div class="flex-1 overflow-y-auto custom-scrollbar">
+                <div
+                    v-for="task in taskList"
+                    :key="task.taskId"
+                    class="task-row mx-2 my-1.5 rounded-md px-3 py-2.5 cursor-pointer transition-all duration-200 border border-transparent hover:border-white/20 hover:bg-white/5"
+                    :class="{
+                        'bg-white/8 border-white/15':
+                            activeTaskId === task.taskId &&
+                            inspectingTaskId !== task.taskId,
+                        'inspecting-row': inspectingTaskId === task.taskId,
+                    }"
+                    @click="handleTaskClick(task)"
+                >
+                    <!-- 第一行：任务编号 + 状态 -->
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-white/85 text-sm font-medium">{{
+                            task.taskId
+                        }}</span>
+                        <span
+                            class="text-xs font-semibold px-2 py-0.5 rounded-full"
+                            :style="getStatusStyle(task.status)"
+                        >
+                            {{ task.status }}
+                        </span>
+                    </div>
+                    <!-- 第二行：机器人名称 -->
+                    <div class="flex items-center gap-1.5 mb-1">
+                        <span class="text-white/40 text-xs">机器人</span>
+                        <span class="text-white/70 text-xs truncate">{{
+                            task.robotName
+                        }}</span>
+                    </div>
+                    <!-- 第三行：关联点位（支持多个） -->
+                    <div class="flex items-start gap-1.5 mb-1">
+                        <span class="text-white/40 text-xs shrink-0 mt-0.5"
+                            >点位</span
+                        >
+                        <div class="flex flex-wrap gap-1">
+                            <span
+                                v-for="(name, idx) in task.deviceNameList"
+                                :key="idx"
+                                class="text-white/70 text-xs px-1.5 py-px rounded bg-white/8"
+                            >
+                                {{ name }}
+                            </span>
+                        </div>
+                    </div>
+                    <!-- 第四行：计划时间 -->
+                    <div class="flex items-center gap-1.5 mb-1">
+                        <span class="text-white/40 text-xs">计划</span>
+                        <span class="text-white/60 text-xs">{{
+                            task.planTime
+                        }}</span>
+                    </div>
+                    <!-- 第五行：异常备注（仅异常告警/已超时时显示） -->
+                    <div
+                        v-if="task.remark"
+                        class="flex items-start gap-1.5 mt-1.5 pt-1.5 border-t border-white/5"
+                    >
+                        <span class="text-red-400/70 text-xs shrink-0 mt-0.5"
+                            >备注</span
+                        >
+                        <span class="text-red-300/80 text-xs leading-relaxed">{{
+                            task.remark
+                        }}</span>
+                    </div>
+                </div>
+                <!-- 空状态 -->
+                <div
+                    v-if="taskList.length === 0"
+                    class="flex items-center justify-center py-16 text-white/30 text-sm"
+                >
+                    暂无巡检任务
+                </div>
+            </div>
+        </div>
     </div>
 </template>
 <script setup lang="ts">
@@ -13,9 +136,318 @@ import { PointerLockControls } from "three/examples/jsm/controls/PointerLockCont
 import MockData from "@/mock/data.json";
 import { OutlinePassConfig } from "@/types/index";
 import { useComposerHook } from "@/pages/useComposer";
+import "./style.css";
+import * as echarts from "echarts/core";
+import { PieChart, BarChart } from "echarts/charts";
+import {
+    TitleComponent,
+    TooltipComponent,
+    LegendComponent,
+    GridComponent,
+} from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 
+echarts.use([
+    PieChart,
+    BarChart,
+    TitleComponent,
+    TooltipComponent,
+    LegendComponent,
+    GridComponent,
+    CanvasRenderer,
+]);
 
 const container = useTemplateRef<HTMLDivElement>("container");
+
+/** 巡检任务列表（响应式） */
+const taskList = reactive<typeof MockData.taskList>([]);
+/** 当前激活（被点击选中）的任务ID */
+const activeTaskId = ref<string | null>(null);
+/** 当前正在执行巡检动画序列的任务ID */
+const inspectingTaskId = ref<string | null>(null);
+/** 巡检动画专用 GSAP Timeline（避免与全局 gsapTimeLine 冲突） */
+let inspectionTimeline: gsap.core.Timeline | null = null;
+/** 自动刷新定时器 */
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+/** ECharts 图表容器 DOM 引用 */
+const pieChartRef = useTemplateRef<HTMLDivElement>("pieChartRef");
+const barChartRef = useTemplateRef<HTMLDivElement>("barChartRef");
+/** ECharts 图表实例 */
+let pieChartInstance: echarts.ECharts | null = null;
+let barChartInstance: echarts.ECharts | null = null;
+/** 趋势柱状图数据：从 MockData 初始化，后续由定时器模拟更新 */
+const trendDays = ref<string[]>([...MockData.chartData.dayLabels]);
+const trendFinish = ref<number[]>([...MockData.chartData.finishData]);
+const trendAlarm = ref<number[]>([...MockData.chartData.alarmData]);
+/** 饼图初始数据 */
+const pieData = ref<{ name: string; value: number }[]>(
+    MockData.chartData.statusPie.map((item) => ({ ...item })),
+);
+
+/** 任务状态对应的文字颜色映射 */
+const statusColorMap: Record<string, { color: string; bg: string }> = {
+    待巡检: { color: "#409EFF", bg: "rgba(64,158,255,0.15)" },
+    巡检中: { color: "#67C23A", bg: "rgba(103,194,58,0.15)" },
+    已完成: { color: "#909399", bg: "rgba(144,147,153,0.15)" },
+    异常告警: { color: "#F56C6C", bg: "rgba(245,108,108,0.15)" },
+    已超时: { color: "#E6A23C", bg: "rgba(230,162,60,0.15)" },
+};
+
+/** 根据状态获取行内样式 */
+function getStatusStyle(status: string) {
+    const map = statusColorMap[status] || {
+        color: "#909399",
+        bg: "rgba(144,147,153,0.15)",
+    };
+    return {
+        color: map.color,
+        backgroundColor: map.bg,
+    };
+}
+
+/** 根据deviceId在场景中查找对应的3D模型 */
+function findDeviceInScene(deviceId: string): THREE.Object3D | null {
+    return scene.getObjectByName(deviceId) || null;
+}
+
+/** 点击任务行：按设备顺序逐个聚焦，每个停留2秒 */
+function handleTaskClick(task: (typeof MockData.taskList)[0]) {
+    activeTaskId.value = task.taskId;
+
+    if (!task.deviceIdList || task.deviceIdList.length === 0) return;
+
+    // 终止上一次巡检动画
+    if (inspectionTimeline) {
+        inspectionTimeline.kill();
+    }
+    // 也终止全局 gsapTimeLine 防止冲突
+    gsapTimeLine.kill();
+
+    // 标记巡检开始
+    inspectingTaskId.value = task.taskId;
+
+    // 创建巡检动画专用 Timeline
+    inspectionTimeline = gsap.timeline({
+        onComplete: () => {
+            inspectingTaskId.value = null;
+            inspectionTimeline = null;
+        },
+    });
+
+    task.deviceIdList.forEach((deviceId, index) => {
+        const device = findDeviceInScene(deviceId);
+        if (!device) return;
+
+        device.getWorldPosition(pos);
+        const unitVector = new THREE.Vector3()
+            .subVectors(pos, camera.position)
+            .normalize();
+        const targetPos = pos.clone().add(unitVector.multiplyScalar(-3));
+
+        // 相机移动到目标位
+        inspectionTimeline!.to(camera.position, {
+            x: targetPos.x,
+            y: targetPos.y,
+            z: targetPos.z,
+            duration: 0.8,
+            ease: "power2.inOut",
+        });
+        // Orbit 目标同步移动
+        inspectionTimeline!.to(
+            orbitControls.target,
+            {
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                duration: 0.8,
+                ease: "power2.inOut",
+            },
+            "<",
+        );
+        // 高亮当前设备
+        inspectionTimeline!.call(() => highlightObject(device));
+
+        // 每个设备停留 2 秒（最后一个设备不延时，留给 onComplete）
+        if (index < task.deviceIdList.length - 1) {
+            inspectionTimeline!.to({}, { duration: 2 });
+        }
+    });
+
+    inspectionTimeline.play();
+}
+
+/** 加载模拟数据 */
+function loadTaskData() {
+    taskList.length = 0;
+    taskList.push(...MockData.taskList);
+}
+
+/** 初始化 ECharts 饼图（任务状态占比） */
+function initPieChart() {
+    if (!pieChartRef.value) return;
+    if (pieChartInstance) pieChartInstance.dispose();
+    pieChartInstance = echarts.init(pieChartRef.value, "dark");
+    updatePieChart();
+}
+
+/** 更新饼图数据：根据当前 taskList 各状态数量动态计算 */
+function updatePieChart() {
+    if (!pieChartInstance) return;
+    // 统计各状态任务数量
+    const statusCount: Record<string, number> = {};
+    taskList.forEach((task) => {
+        statusCount[task.status] = (statusCount[task.status] || 0) + 1;
+    });
+    const data = Object.entries(statusCount).map(([name, value]) => ({
+        name,
+        value,
+    }));
+    const option: echarts.EChartsCoreOption = {
+        tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
+        legend: {
+            orient: "vertical",
+            right: 5,
+            top: "center",
+            textStyle: { color: "#ccc", fontSize: 11 },
+        },
+        series: [
+            {
+                type: "pie",
+                radius: ["45%", "75%"],
+                center: ["40%", "50%"],
+                avoidLabelOverlap: false,
+                itemStyle: {
+                    borderRadius: 4,
+                    borderColor: "rgba(0,0,0,0.8)",
+                    borderWidth: 2,
+                },
+                label: { show: false },
+                emphasis: {
+                    label: { show: true, fontSize: 14, fontWeight: "bold" },
+                    scaleSize: 8,
+                },
+                data,
+                color: ["#409EFF", "#67C23A", "#909399", "#F56C6C", "#E6A23C"],
+            },
+        ],
+    };
+    pieChartInstance.setOption(option);
+    pieData.value = data;
+}
+
+/** 初始化 ECharts 柱状图（巡检任务趋势） */
+function initBarChart() {
+    if (!barChartRef.value) return;
+    if (barChartInstance) barChartInstance.dispose();
+    barChartInstance = echarts.init(barChartRef.value, "dark");
+    updateBarChart();
+}
+
+/** 更新柱状图数据 */
+function updateBarChart() {
+    if (!barChartInstance) return;
+    const option: echarts.EChartsCoreOption = {
+        tooltip: {
+            trigger: "axis",
+            axisPointer: { type: "shadow" },
+        },
+        legend: {
+            data: ["已完成", "异常告警"],
+            top: 0,
+            textStyle: { color: "#ccc", fontSize: 11 },
+        },
+        grid: {
+            left: "3%",
+            right: "4%",
+            bottom: "3%",
+            top: 30,
+            containLabel: true,
+        },
+        xAxis: {
+            type: "category",
+            data: trendDays.value,
+            axisLabel: { color: "#999" },
+            axisLine: { lineStyle: { color: "#333" } },
+        },
+        yAxis: {
+            type: "value",
+            axisLabel: { color: "#999" },
+            splitLine: { lineStyle: { color: "rgba(255,255,255,0.06)" } },
+        },
+        series: [
+            {
+                name: "已完成",
+                type: "bar",
+                data: trendFinish.value,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: "#67C23A" },
+                        { offset: 1, color: "rgba(103,194,58,0.3)" },
+                    ]),
+                    borderRadius: [4, 4, 0, 0],
+                },
+                barWidth: "35%",
+            },
+            {
+                name: "异常告警",
+                type: "bar",
+                data: trendAlarm.value,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: "#F56C6C" },
+                        { offset: 1, color: "rgba(245,108,108,0.3)" },
+                    ]),
+                    borderRadius: [4, 4, 0, 0],
+                },
+                barWidth: "35%",
+            },
+        ],
+    };
+    barChartInstance.setOption(option);
+}
+
+/** 模拟实时推送：更新趋势数据并刷新任务状态 */
+function simulateRealtimePush() {
+    // 柱状图横坐标固定周一~周五不变，仅随机波动数值模拟数据变化
+    trendFinish.value = trendFinish.value.map(
+        () => Math.floor(Math.random() * 10) + 10,
+    );
+    trendAlarm.value = trendAlarm.value.map(() =>
+        Math.floor(Math.random() * 4),
+    );
+
+    // 更新任务状态数据
+    taskList.forEach((task) => {
+        const num = Math.random();
+        if (num < 0.33) task.status = "巡检中";
+        else if (num < 0.66) task.status = "已完成";
+        else task.status = "异常告警";
+        if (task.status === "异常告警" && !task.remark) {
+            task.remark = "巡检过程中检测到设备参数异常";
+        } else if (task.status !== "异常告警") {
+            task.remark = "";
+        }
+    });
+
+    updatePieChart();
+    updateBarChart();
+}
+
+/** 启动定时刷新（每5秒模拟后端实时数据推送，联动更新任务列表+图表+3D设备） */
+function startAutoRefresh() {
+    stopAutoRefresh();
+    refreshTimer = setInterval(() => {
+        simulateRealtimePush();
+    }, 3000);
+}
+
+function stopAutoRefresh() {
+    if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+    }
+}
 const scene = new THREE.Scene();
 const renderer = new THREE.WebGPURenderer({
     antialias: true,
@@ -430,16 +862,18 @@ const setttings = {
     showStatus: false,
     randomStatus: () => {
         const allDevices = [...normalDevices, ...alarmDevices];
-        const newNormalDevices: THREE.Object3D[] = [], newAlarmDevices: THREE.Object3D[] = [];
-        allDevices.forEach(device => {
-        const isNormal = Math.random() > 0.5
-            if (isNormal) newNormalDevices.push(device)
-            else newAlarmDevices.push(device)
-        })
+        const newNormalDevices: THREE.Object3D[] = [],
+            newAlarmDevices: THREE.Object3D[] = [];
+        allDevices.forEach((device) => {
+            const isNormal = Math.random() > 0.5;
+            if (isNormal) newNormalDevices.push(device);
+            else newAlarmDevices.push(device);
+        });
 
-      changeOutlinePass(newAlarmDevices, { color: "#ff0000" }, 1);
-      changeOutlinePass(newNormalDevices, { color: highlightColor }, 0);
+        changeOutlinePass(newAlarmDevices, { color: "#ff0000" }, 1);
+        changeOutlinePass(newNormalDevices, { color: highlightColor }, 0);
     },
+    startRefreshTask: false,
 };
 
 /**添加GUI */
@@ -467,8 +901,15 @@ function addSettings() {
             }
         });
 
-    settingControls.add(setttings, "randomStatus")
-        .name("随机修改设备状态")
+    settingControls.add(setttings, "randomStatus").name("随机修改设备状态");
+
+    settingControls
+        .add(setttings, "startRefreshTask")
+        .name("随机刷新巡检任务")
+        .onChange((val) => {
+            if (val) startAutoRefresh();
+            else stopAutoRefresh();
+        });
 }
 
 onMounted(() => {
@@ -496,5 +937,24 @@ onMounted(() => {
     }
     addPlane();
     addSettings();
+
+    // 加载巡检任务数据
+    loadTaskData();
+    // 初始化 ECharts 图表（默认静态，通过 GUI "图表数据实时更新" 控制动态刷新）
+    initPieChart();
+    initBarChart();
+});
+
+onUnmounted(() => {
+    stopAutoRefresh();
+    // 销毁 ECharts 图表实例，释放资源
+    if (pieChartInstance) {
+        pieChartInstance.dispose();
+        pieChartInstance = null;
+    }
+    if (barChartInstance) {
+        barChartInstance.dispose();
+        barChartInstance = null;
+    }
 });
 </script>
