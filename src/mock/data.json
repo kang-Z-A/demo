@@ -1,0 +1,51 @@
+{
+  "deviceList": [
+    {
+      "deviceId": "D001",
+      "deviceName": "视频监控点位A",
+      "status": "normal"
+    },
+    {
+      "deviceId": "D002",
+      "deviceName": "常规监测点位B",
+      "status": "alarm"
+    },
+    {
+      "deviceId": "D003",
+      "deviceName": "视频监控点位C",
+      "status": "normal"
+    }
+  ],
+  "taskList": [
+    {
+      "taskId": "T001",
+      "robotName": "自动巡检机器人01",
+      "deviceIdList": ["D001", "D003"],
+      "deviceNameList": ["视频监控点位A", "视频监控点位C"],
+      "planTime": "2026-07-22 14:30",
+      "status": "巡检中",
+      "remark": ""
+    },
+    {
+      "taskId": "T002",
+      "robotName": "自动巡检机器人02",
+      "deviceIdList": ["D002"],
+      "deviceNameList": ["常规监测点位B"],
+      "planTime": "2026-07-22 10:00",
+      "status": "异常告警",
+      "remark": "设备参数异常，点位监测数据超标"
+    }
+  ],
+  "chartData": {
+    "dayLabels": ["周一", "周二", "周三", "周四", "周五"],
+    "finishData": [12, 16, 14, 19, 17],
+    "alarmData": [2, 1, 3, 0, 2],
+    "statusPie": [
+      { "name": "待巡检", "value": 6 },
+      { "name": "巡检中", "value": 4 },
+      { "name": "已完成", "value": 17 },
+      { "name": "异常告警", "value": 2 },
+      { "name": "已超时", "value": 1 }
+    ]
+  }
+}
