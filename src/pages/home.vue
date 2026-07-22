@@ -167,6 +167,12 @@ const activeTaskId = ref<string | null>(null);
 const inspectingTaskId = ref<string | null>(null);
 /** 巡检动画专用 GSAP Timeline（避免与全局 gsapTimeLine 冲突） */
 let inspectionTimeline: gsap.core.Timeline | null = null;
+/** 视频播放用的 HTMLVideoElement，用于巡检时在设备上方展示实时视频画面 */
+let videoElement: HTMLVideoElement | null = null;
+/** 从 videoElement 创建的 Three.js 视频纹理，作为视频平面的贴图 */
+let videoTexture: THREE.VideoTexture | null = null;
+/** 巡检时设备上方展示的视频平面网格，根据可见性控制显隐 */
+let videoPlane: THREE.Mesh | null = null;
 /** 自动刷新定时器 */
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -232,8 +238,12 @@ function handleTaskClick(task: (typeof MockData.taskList)[0]) {
         onComplete: () => {
             inspectingTaskId.value = null;
             inspectionTimeline = null;
+            // 巡检结束，最后一个设备的视频平面保持显示，不自动隐藏
         },
     });
+
+    // 巡检开始时先隐藏视频平面
+    if (videoPlane) videoPlane.visible = false;
 
     task.deviceIdList.forEach((deviceId, index) => {
         const device = findDeviceInScene(deviceId);
@@ -243,7 +253,15 @@ function handleTaskClick(task: (typeof MockData.taskList)[0]) {
         const unitVector = new THREE.Vector3()
             .subVectors(pos, camera.position)
             .normalize();
-        const targetPos = pos.clone().add(unitVector.multiplyScalar(-3));
+        const targetPos = pos.clone().add(unitVector.multiplyScalar(-5));
+
+        // 切换到下一个设备前，先隐藏上一个设备的视频平面
+        if (index > 0) {
+            inspectionTimeline!.call(() => {
+                if (videoPlane) videoPlane.visible = false;
+                if (videoElement) videoElement.pause();
+            });
+        }
 
         // 相机移动到目标位
         inspectionTimeline!.to(camera.position, {
@@ -267,6 +285,19 @@ function handleTaskClick(task: (typeof MockData.taskList)[0]) {
         );
         // 高亮当前设备
         inspectionTimeline!.call(() => highlightObject(device));
+
+        // 在设备上方显示视频平面并开始播放视频
+        inspectionTimeline!.call(() => {
+            if (videoPlane && videoElement) {
+                const devicePos = new THREE.Vector3();
+                device.getWorldPosition(devicePos);
+                // 将视频平面放置在设备 box 上方 1.5 个单位处
+                videoPlane.position.copy(devicePos);
+                videoPlane.position.y += 1.5;
+                videoPlane.visible = true;
+                videoElement.play();
+            }
+        });
 
         // 每个设备停留 2 秒（最后一个设备不延时，留给 onComplete）
         if (index < task.deviceIdList.length - 1) {
@@ -506,6 +537,14 @@ function addLight() {
 
 /**防止拖拽事件触发点击事件 */
 let beforeX: number, beforeY: number, afterX: number, afterY: number;
+/** 存储 mousedown 事件处理函数引用，用于 onUnmounted 时移除监听 */
+const onMouseDown = (e: MouseEvent) => {
+    [beforeX, beforeY] = [e.offsetX, e.offsetY];
+};
+/** 存储 mouseup 事件处理函数引用，用于 onUnmounted 时移除监听 */
+const onMouseUp = (e: MouseEvent) => {
+    [afterX, afterY] = [e.offsetX, e.offsetY];
+};
 function contextmenuEvent(event: MouseEvent) {
     event.preventDefault();
     if (Math.abs(afterX - beforeX) > 2 || Math.abs(afterY - beforeY) > 2)
@@ -527,14 +566,10 @@ const recoverMaterial = (includeOutline: boolean = false) => {
 function addEventListeners() {
     if (!container.value) return;
     container.value.addEventListener("dblclick", addRaycaster);
+    container.value.addEventListener("click", clickVideoPlaneToggle);
     container.value.addEventListener("contextmenu", contextmenuEvent);
-    //控制拖拽时不触发点击事件
-    container.value.addEventListener("mousedown", (e: MouseEvent) => {
-        [beforeX, beforeY] = [e.offsetX, e.offsetY];
-    });
-    container.value.addEventListener("mouseup", (e: MouseEvent) => {
-        [afterX, afterY] = [e.offsetX, e.offsetY];
-    });
+    container.value.addEventListener("mousedown", onMouseDown);
+    container.value.addEventListener("mouseup", onMouseUp);
 }
 
 const pos = new THREE.Vector3();
@@ -582,12 +617,36 @@ function addRaycaster(event: MouseEvent) {
     }
 }
 
+/**
+ * 点击视频平面切换播放/暂停状态
+ * 通过射线检测判断点击是否命中视频平面，若命中则切换 videoElement 的播放状态
+ */
+function clickVideoPlaneToggle(event: MouseEvent) {
+    if (!videoPlane || !videoPlane.visible || !videoElement) return;
+
+    const mouse = new THREE.Vector2();
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObject(videoPlane);
+    if (intersects.length > 0) {
+        event.stopPropagation();
+        if (videoElement.paused) {
+            videoElement.play();
+        } else {
+            videoElement.pause();
+        }
+    }
+}
+
 function highlightObject(object: THREE.Object3D) {
     if (composerApi) {
         changeOutlinePass([object], {
             color: highlightColor,
         });
     }
+    ElMessage.success(`选中设备${object.name}`);
 }
 
 /**场景初始化 */
@@ -647,6 +706,17 @@ function animate() {
         orbitControls?.update();
     }
 
+    // 视频平面广告牌效果：每帧让平面的 +Z 方向始终朝向相机
+    if (videoPlane && videoPlane.visible) {
+        const dir = new THREE.Vector3()
+            .subVectors(camera.position, videoPlane.position)
+            .normalize();
+        videoPlane.quaternion.setFromUnitVectors(
+            new THREE.Vector3(0, 0, 1),
+            dir,
+        );
+    }
+
     if (composerApi) {
         composerApi.postProcessing.render();
     } else {
@@ -681,6 +751,43 @@ function addPlane() {
     scene.add(mesh);
 }
 
+/**
+ * 创建巡检时设备上方展示的视频平面
+ * 使用 HTMLVideoElement + VideoTexture 驱动，循环播放 public/test.mp4
+ * 平面初始隐藏，巡检动画中按需显隐；每帧通过 animate 中的朝向更新实现广告牌效果
+ */
+function createVideoPlane() {
+    // 创建隐藏的 video 元素，用于解码 mp4 视频流
+    videoElement = document.createElement("video");
+    videoElement.src = "/test.mp4";
+    videoElement.loop = true;
+    videoElement.muted = true;
+    videoElement.playsInline = true;
+    videoElement.crossOrigin = "anonymous";
+    videoElement.style.display = "none";
+    document.body.appendChild(videoElement);
+
+    // 基于 video 元素创建视频纹理，用于驱动平面材质
+    videoTexture = new THREE.VideoTexture(videoElement);
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.magFilter = THREE.LinearFilter;
+    videoTexture.colorSpace = THREE.SRGBColorSpace;
+
+    // 创建视频平面网格（宽高比 16:9）
+    const geo = new THREE.PlaneGeometry(2, 1.125);
+    const mat = new THREE.MeshBasicNodeMaterial({
+        map: videoTexture,
+        side: THREE.DoubleSide,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+    });
+    videoPlane = new THREE.Mesh(geo, mat);
+    videoPlane.visible = false;
+    videoPlane.renderOrder = 999;
+    scene.add(videoPlane);
+}
+
 let moveForward = false;
 let moveBackward = false;
 let moveLeft = false;
@@ -698,6 +805,10 @@ let target = new THREE.Vector3(),
     };
 let firstExit = true;
 const firstViewSpeed = 20;
+/** 漫游模式键盘按下事件处理函数引用，用于 onUnmounted 时移除 document 级监听 */
+let pointerLockKeyDown: ((event: KeyboardEvent) => void) | null = null;
+/** 漫游模式键盘松开事件处理函数引用，用于 onUnmounted 时移除 document 级监听 */
+let pointerLockKeyUp: ((event: KeyboardEvent) => void) | null = null;
 /**第一人称视角移动时，监听前后帧视角偏移程度，防止退出时相机朝向偏移 */
 function firstViewMoveWatcher() {
     const time = performance.now();
@@ -836,6 +947,9 @@ function usePointerLockControls() {
 
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    // 存储引用以便 onUnmounted 时移除
+    pointerLockKeyDown = onKeyDown;
+    pointerLockKeyUp = onKeyUp;
     startPointerLockControls();
 }
 
@@ -874,6 +988,10 @@ const setttings = {
         changeOutlinePass(newNormalDevices, { color: highlightColor }, 0);
     },
     startRefreshTask: false,
+    hideVideoPlane: () => {
+        if (videoPlane) videoPlane.visible = false;
+        if (videoElement) videoElement.pause();
+    },
 };
 
 /**添加GUI */
@@ -910,6 +1028,8 @@ function addSettings() {
             if (val) startAutoRefresh();
             else stopAutoRefresh();
         });
+
+    settingControls.add(setttings, "hideVideoPlane").name("隐藏巡检视频");
 }
 
 onMounted(() => {
@@ -936,6 +1056,7 @@ onMounted(() => {
         }
     }
     addPlane();
+    createVideoPlane();
     addSettings();
 
     // 加载巡检任务数据
@@ -946,15 +1067,57 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+    // 停止渲染循环
+    renderer.setAnimationLoop(null);
+
+    // 终止所有动画时间线
+    gsapTimeLine.kill();
+    inspectionTimeline?.kill();
+
+    // 停止定时任务
     stopAutoRefresh();
-    // 销毁 ECharts 图表实例，释放资源
-    if (pieChartInstance) {
-        pieChartInstance.dispose();
-        pieChartInstance = null;
+
+    // 移除容器 DOM 事件监听
+    const el = container.value;
+    if (el) {
+        el.removeEventListener("dblclick", addRaycaster);
+        el.removeEventListener("click", clickVideoPlaneToggle);
+        el.removeEventListener("contextmenu", contextmenuEvent);
+        el.removeEventListener("mousedown", onMouseDown);
+        el.removeEventListener("mouseup", onMouseUp);
+        el.removeEventListener("click", startPointerLockControls);
     }
-    if (barChartInstance) {
-        barChartInstance.dispose();
-        barChartInstance = null;
-    }
+
+    // 移除漫游模式的全局键盘监听
+    if (pointerLockKeyDown) document.removeEventListener("keydown", pointerLockKeyDown);
+    if (pointerLockKeyUp) document.removeEventListener("keyup", pointerLockKeyUp);
+
+    // 销毁后处理管线与控制器
+    composerApi?.dispose();
+    orbitControls?.dispose();
+    pointerLockControls?.unlock();
+    pointerLockControls?.dispose();
+
+    // 遍历场景，销毁网格的几何体、材质及其上的贴图纹理（含视频纹理）
+    scene.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+            child.geometry.dispose();
+            const mat = child.material as THREE.Material & { map?: THREE.Texture; envMap?: THREE.Texture };
+            mat.map?.dispose();
+            mat.envMap?.dispose();
+            mat.dispose();
+        }
+    });
+
+    // 移除手动挂载到 document.body 的视频 DOM 元素
+    videoElement?.remove();
+
+    // 移除渲染器 canvas 并销毁渲染器
+    renderer.domElement?.remove();
+    renderer.dispose();
+
+    // 销毁图表实例
+    pieChartInstance?.dispose();
+    barChartInstance?.dispose();
 });
 </script>
