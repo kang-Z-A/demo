@@ -63,16 +63,6 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/SIPAIIS_Base/': {
-        // target: 'http://132.120.136.10:9080',
-        target: 'http://223.84.61.83:3033',
-        changeOrigin: true,
-        rewrite: path => path.replace(/^\/SIPAIIS_Base/, '\/SIPAIIS_Base/'),
-        bypass(req, res, options) {
-          const proxyURL = options.target + options.rewrite!(req.url!);
-          res?.setHeader('x-req-proxyURL', proxyURL) // 将真实请求地址设置到响应头中
-        },
-      }
     }
   }
 })
